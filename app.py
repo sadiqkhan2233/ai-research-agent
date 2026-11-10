@@ -1,21 +1,81 @@
 import os
 import streamlit as st
+import litellm
 
 # ----------------------------------------
-# IMPORTANT: CrewAI + Groq compatibility fix
-# This must be BEFORE importing Agent, Crew, LLM, and Task.
+# CrewAI + Groq compatibility fix
 # ----------------------------------------
+
 import crewai.llms.cache as crewai_cache
 
-crewai_cache.mark_cache_breakpoint = lambda msg: msg
-
-# ----------------------------------------
-# CrewAI and other imports
-# ----------------------------------------
 from crewai import Agent, Crew, LLM, Process, Task
 from crewai.tools import BaseTool
 from ddgs import DDGS
 from pydantic import Field
+
+
+# 1. Disable CrewAI cache breakpoint injection
+def disable_cache_breakpoint(message):
+    return message
+
+
+crewai_cache.mark_cache_breakpoint = disable_cache_breakpoint
+
+
+# 2. Patch CrewAI executor references
+try:
+    import crewai.agents.crew_agent_executor as crew_executor
+
+    crew_executor.mark_cache_breakpoint = disable_cache_breakpoint
+
+except ImportError:
+    pass
+
+
+try:
+    import crewai.experimental.agent_executor as experimental_executor
+
+    experimental_executor.mark_cache_breakpoint = disable_cache_breakpoint
+
+except ImportError:
+    pass
+
+
+# 3. Remove unsupported fields before LiteLLM sends requests to Groq
+if not getattr(litellm.completion, "_groq_patch_applied", False):
+
+    original_completion = litellm.completion
+
+    def groq_safe_completion(*args, **kwargs):
+
+        model = kwargs.get("model", "")
+
+        if isinstance(model, str) and model.startswith("groq/"):
+
+            kwargs["caching"] = False
+
+            messages = kwargs.get("messages", [])
+
+            for message in messages:
+
+                if isinstance(message, dict):
+
+                    message.pop("cache_breakpoint", None)
+
+                    content = message.get("content")
+
+                    if isinstance(content, list):
+
+                        for block in content:
+
+                            if isinstance(block, dict):
+                                block.pop("cache_breakpoint", None)
+
+        return original_completion(*args, **kwargs)
+
+    groq_safe_completion._groq_patch_applied = True
+
+    litellm.completion = groq_safe_completion
 
 
 # ----------------------------------------
